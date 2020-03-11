@@ -1,0 +1,315 @@
+---
+title: "Causal Analytics Project"
+author: ""
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+  number_sections: yes
+fontsize: 12pt
+html_document:
+  df_print: paged
+toc: yes
+header-includes: \usepackage{setspace}\doublespacing
+---
+#Background & Motivation
+##Business Context
+xxxx
+##Value of Question
+xxxxxx
+
+#Threats to Causal Inference
+xxxxx
+
+#Dataset & Measures
+##The Data
+
+```{r,echo =F,include=F,warning=F}
+library(dplyr)
+library(ggplot2)
+library(plm)
+library(tidyr)
+library(MatchIt)
+```
+
+```{r, warning=F}
+setwd("/Users/linlin/OneDrive/causal/project/")
+df<- read.csv("city_left.csv")
+#remove the useless column
+df <- subset(df,select = -c(yr))
+```
+
+### set a cut-off date
+
+``` {r, warning=F}
+#create a cutoff date 16.08
+#if time < 16.08, then it should be 0
+#if time > 16.08, then it should be 1
+df$after <- ifelse(df$y_m <= 16.08,0,1)
+
+#select the cities whose entrance date is 16.08  as the only treatment group
+df$treat1 <- ifelse(df$RegionID %in% c(41579,54212,31163,10774,14111,17188,6395,272578,47762),1,0)
+df$treat1 <- as.integer(df$treat1)
+df$after <- as.integer(df$after)
+```
+
+##Distribution of the Data
+
+``` {r, warning=F}
+#how many cities got treatment?
+nrow(unique(df %>% filter(treat1 == 1) %>% select(RegionID)))
+#5 is treated
+nrow(unique(df %>% filter(treat1 == 0) %>% select(RegionID)))
+#1981 are untreated
+```
+
+``` {r, warning=F}
+hist(df$RI)
+```
+
+``` {r, warning=F}
+#for the treatment group, those cities already has a high ri
+rent_ave <- df %>% group_by(y_m,treat1) %>% 
+  summarise(ave_ri = mean(RI))
+ggplot(rent_ave, aes(x = y_m,y=ave_ri,color = factor(treat1))) + 
+  geom_line()+ geom_vline(xintercept = 16.08) + 
+  labs(title = 'average rental index of treat and control group over the month',
+       colors = 'treat',x = 'year and month',y='average rental index')
+```
+
+#Methods
+
+##Matching
+```{r}
+# create a dataset of before vs. after for convenience
+df_merge1 <- subset(df,select= c(RegionID,after,treat1,RI,y_m))
+
+#do normalization before treatment (min-max)
+df_merge2 <- df_merge1 %>% filter(after == 0)
+df_max <- df_merge2 %>% group_by(RegionID) %>% summarise(max_ri = max(RI))
+df_min <- df_merge2 %>% group_by(RegionID) %>% summarise(min_ri = min(RI))
+#merge the tables with df_merge2
+df_merge3 <- left_join(df_merge2,df_max,by = "RegionID")
+df_merge3 <- left_join(df_merge3,df_min,by = 'RegionID')
+df_merge3$nor_ri <- (df_merge3$RI - df_merge3$min_ri)/(df_merge3$max_ri - df_merge3$min_ri)
+
+#mean of nor_ri for each city before treatment
+df_summary <- df_merge3 %>% group_by(RegionID) %>%
+  summarise_all(mean) %>% ungroup()
+```
+
+
+```{r}
+# Check covariance balancing with t.test
+t.test(nor_ri ~ treat1, data = df_summary)
+#reject the null hypothesis
+#the means are significantly different
+```
+
+```{r}
+#probability of getting the premium
+# Let's see what propensity scores distribution look like 
+df_summary <- na.omit(df_summary)
+ps_model = glm(treat1 ~ nor_ri, data = df_summary, family = "binomial")
+df_summary$PS <- ps_model$fitted.values
+
+ggplot(df_summary,aes(x = PS,color = factor(treat1))) + geom_density() +
+  labs(title = "covariance balance plot before matching",
+       colour = "treat", x = "propensity score", y = "density")
+```
+
+```{r}
+#perform matching based on normalized RI
+# Perform Matching
+match_output <- matchit(treat1 ~ nor_ri, data = df_summary, method = 'nearest', distance = "logit", caliper = 0.001, replace = FALSE, ratio = 1)
+summary(match_output)
+data_match = match.data(match_output)
+#3 cities match together
+```
+
+
+```{r}
+# Evaluate covariance balance again, after matching
+t.test(nor_ri ~ treat1, data = data_match)
+ggplot(data_match, aes(x = PS, color = factor(treat1))) +
+  geom_density() +
+  labs(title = "covariance balance plot after matching",
+       colour = "treat", x = "propensity score", y = "density")
+```
+
+##Difference-in-Difference
+
+```{r}
+#select the cities we want and then do DID
+region <- data_match$RegionID
+#choose two cities 
+region <- c(48052,14111)
+df_did <- df[df$RegionID %in% region,]
+```
+
+```{r}
+ggplot(df_did, aes(x = y_m, y = RI, color = factor(treat1))) + 
+  geom_line() + 
+  geom_vline(xintercept = 16.08, linetype='dotted') + 
+  labs(title = 'rental index for treat and control cities over the month',
+       color = 'treat',x = 'year and month',y = 'rental index')
+  theme_bw()
+```
+
+#Results & Conclusions
+##Regression Results
+```{r}
+# Let's try replacing the treatment dummy with subject fixed effects.
+did_sfe = plm(log(RI + 1) ~ treat1 + after + treat1*after, data = df_did,
+              effect = "individual", index = "RegionID", model = "within")
+#adding dummy variables by using within transformation
+summary(did_sfe)
+```
+
+```{r}
+# Further add month fixed effects ("twoway fixed effects")
+did_sfe_tfe = plm(log(RI + 1) ~ treat1 + after+ treat1*after, data = df_did,
+                  effect = "twoway", index = c("RegionID","y_m"), model = "within")
+summary(did_sfe_tfe)
+```
+
+
+##Key Takeaways
+xxxx
+
+#Limitations
+xxxxx
+
+#Appendix
+```{r}
+#all the codes of data cleaning
+setwd("/Users/linlin/OneDrive/causal/project/")
+
+home <- read.csv("City_Zri_AllHomesPlusMultifamily.csv")
+airbnb <- read.csv("airbnb_listings_req.csv")
+
+library(dplyr)
+library(ggplot2)
+library(MatchIt)
+library(plm)
+library(tidyr)
+library(tidyverse)
+library(sqldf)
+
+#delete the Metro and Countyname column
+home <- subset(home,select=-c(Metro,CountyName,SizeRank))
+
+#gather the data
+home1 <- gather(home,y_m, RI,-c(RegionID,RegionName,State))
+
+#transform the y_m
+home1$y_m <- str_sub(home1$y_m,-5,-1)
+
+#tranform the city into lower case
+home1$RegionName <- tolower(home1$RegionName)
+home1$State <- toupper(home1$State)
+
+home1$RegionName <- gsub("[[:space:]]*$","", home1$RegionName)
+home1$State <- gsub("[[:space:]]*$","", home1$State)
+
+#change the column name
+colnames(home1)[2] <- "City"
+
+#change the host since into date type
+class(airbnb$Host.Since)
+airbnb$Host.Since <- as.Date(airbnb$Host.Since,format = "%d-%m-%Y")
+
+#remove NA
+airbnb <- airbnb[!is.na(airbnb$Host.Since),]
+airbnb <- airbnb[!is.na(airbnb$City),]
+
+#change the case of cities
+airbnb$City <- tolower(airbnb$City)
+airbnb$State <- toupper(airbnb$State)
+
+#remove the remaining words after  , / () - 
+airbnb$City<-gsub("-.*","",airbnb$City)
+airbnb$City<-gsub("/.*","",airbnb$City)
+airbnb$City<-gsub("\\(.*","",airbnb$City)
+airbnb$City<-gsub("\\).*","",airbnb$City)
+airbnb$City<-gsub(",.*","",airbnb$City)
+
+#remove the last space after the words
+airbnb$City <- gsub("[[:space:]]*$","", airbnb$City)
+airbnb$State <- gsub("[[:space:]]*$","", airbnb$State)
+
+#getting the smallest host since for each city
+airbnb_city <- airbnb %>% select(City,State,Host.Since) %>% group_by(City,State) %>% arrange() %>% slice(1L) %>% ungroup()
+
+#merge the home1 and airbnb
+#label the treatment
+home_join1 <- sqldf('select h.*,ac.`host.since` from home1 h left join airbnb_city ac on h.City=ac.City and h.State=ac.State')
+
+#label the time of treatment
+#replace NA with 0
+home_join1$Host.Since <- ifelse(is.na(home_join1$Host.Since) == TRUE, 999999999, home_join1$Host.Since)
+options(digits = 4)
+home_join1$y_m <- as.double(home_join1$y_m)
+#change the host since into the float type
+home_join1$time <- str_sub(home_join1$Host.Since,3,7)
+#replace - with .
+home_join1$time <- gsub("-",".",home_join1$time)
+#change string to float
+options(digits = 4)
+home_join1$time <- as.double(home_join1$time)
+home_join1$yr <- str_sub(home_join1$y_m,1,2)
+
+#----- filter out those cities which have NA before 16.08 -------------------------
+#filter out 10.09 - 11.07
+home_join2 <- home_join1 %>% filter(y_m >= 11.08)
+
+#first, how many cities in our dataset
+city <- home_join2 %>% group_by(City) %>% count()
+#7038 cities totally
+
+city_na <- home_join2[is.na(home_join2$RI),]
+city_na_count <- city_na %>% group_by(City) %>% count()
+#5122 cities have NAs
+
+#before 16.08, how many cities have NAs in RI
+home_join_cut <- home_join2 %>% filter(y_m <= 16.08)
+city_na_cut_count <- home_join_cut[is.na(home_join_cut$RI),]
+city_na_cut_count <- city_na_cut_count %>% group_by(City) %>% count()
+#4331 cities have NAs
+
+#remove these 4331 cities from the dataset
+cities <- city_na_cut_count$City
+city_final <- home_join2[!home_join2$City %in% cities, ]
+#check the number of cities left
+city_count_check <- city_final %>% group_by(City) %>% count()
+#2707 cities are left
+
+#------for the NAs after the cut-off date---------------------------------------------
+#check how many cities have NAs after this cut-off date
+city_na_check <- city_final[is.na(city_final$RI),] %>% group_by(City) %>% count()
+#791 cities have NAs
+
+#first method, just impute the NAs with the average RI in that year
+
+#second method, just delete those cities
+
+#i will try the second method first
+
+#-------delete the cities which have NAs--------------
+#it should be 1916 cities left
+cities2 <- city_na_check$City
+city_left <- city_final[!city_final$City %in% cities2,]
+city_left_check <- city_left %>% group_by(City) %>% count()
+#1916
+```
+
+
+
+
+
+
+
+
+
+
+
+
