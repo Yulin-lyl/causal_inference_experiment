@@ -16,6 +16,7 @@ estimated market-rate rent across a given region and housing type. ZRI, which is
 
 ## Methods
 1. Matching
+![matching_graph](https://github.com/Yulin-lyl/causal_inference_experiment/blob/master/matching_graph.png)
 2. Difference-in-Difference
 
 ## Results
