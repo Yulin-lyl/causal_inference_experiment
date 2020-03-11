@@ -18,6 +18,7 @@ estimated market-rate rent across a given region and housing type. ZRI, which is
 1. Matching
 ![matching_graph](https://github.com/Yulin-lyl/causal_inference_experiment/blob/master/matching_graph.png)
 2. Difference-in-Difference
+![DiD_graph](https://github.com/Yulin-lyl/causal_inference_experiment/blob/master/did_graph.png)
 
 ## Results
 The entry of Airbnb decreased the rental index of Temple City by 7% compared to that of Tumwater. This is a significant decrease in terms of rental prices. 
